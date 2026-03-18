@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://ibb.co.com/dwDx8nsd" alt="WASHIQ ADNAN" width="180" style="border-radius: 50%; border: 4px solid #00d2ff;">
+<img src="https://i.imgur.com/4I4O6ni.jpeg" alt="WASHIQ ADNAN" width="180" style="border-radius: 50%; border: 4px solid #00d2ff;">
 
 # ⚡ **WASHIQ ADNAN** ⚡
 ### `Full-Stack Chatbot Architect | UI/UX Enthusiast`
