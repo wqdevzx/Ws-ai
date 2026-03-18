@@ -1,120 +1,240 @@
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
-const sharp = require("sharp");
+const axios = require('axios');
+const fs = require('fs-extra'); 
+const path = require('path');
+const stream = require('stream');
+const { promisify } = require('util');
+const { createCanvas, loadImage } = require('canvas');
+
+const pipeline = promisify(stream.pipeline);
+const API_ENDPOINT = "https://dev.oculux.xyz/api/mj-proxy-pub"; 
+
+async function downloadSingleImage(url, tempDir, index) {
+    let tempFilePath = '';
+    try {
+        const imageStreamResponse = await axios({
+            method: 'get',
+            url: url,
+            responseType: 'arraybuffer',
+            timeout: 120000 
+        });
+
+        tempFilePath = path.join(tempDir, `mj_single_${Date.now()}_${index}.jpg`);
+        await fs.writeFile(tempFilePath, imageStreamResponse.data);
+
+        return { path: tempFilePath };
+
+    } catch (e) {
+        if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+        throw new Error("Failed to download the image.");
+    }
+}
+
+async function createGridImage(imagePaths, outputPath) {
+    const images = await Promise.all(imagePaths.map(p => loadImage(p)));
+
+    const imgWidth = images[0].width;
+    const imgHeight = images[0].height;
+    const padding = 10;
+    const numberSize = 40;
+
+    const canvasWidth = (imgWidth * 2) + (padding * 3);
+    const canvasHeight = (imgHeight * 2) + (padding * 3);
+
+    const canvas = createCanvas(canvasWidth, canvasHeight);
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+    const positions = [
+        { x: padding, y: padding },
+        { x: imgWidth + (padding * 2), y: padding },
+        { x: padding, y: imgHeight + (padding * 2) },
+        { x: imgWidth + (padding * 2), y: imgHeight + (padding * 2) }
+    ];
+
+    for (let i = 0; i < images.length && i < 4; i++) {
+        const { x, y } = positions[i];
+        ctx.drawImage(images[i], x, y, imgWidth, imgHeight);
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.beginPath();
+        ctx.arc(x + numberSize, y + numberSize, numberSize - 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 28px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText((i + 1).toString(), x + numberSize, y + numberSize);
+    }
+
+    const buffer = canvas.toBuffer('image/png');
+    await fs.writeFile(outputPath, buffer);
+    return outputPath;
+}
 
 module.exports = {
   config: {
-    name: "mj",
-    version: "1.0",
-    role: 2,
-    author: "Ariyan",
-    countDown: 60,
-    category: "AI"
-  },
-
-  onStart: async function({ api, event, args, message }) {
-    if (!args.length) return message.reply("Please provide a prompt.");
-
-    api.setMessageReaction("⏳", event.messageID, () => {}, true);
-
-    try {
-      const prompt = args.join(" ");
-      const res = await axios.post(
-        "http://45.130.164.219:3000/generate",
-        { prompt },
-        { headers: { "x-api-key": "Maisha" } }
-      );
-
-      if (!res.data.success || !Array.isArray(res.data.images) || !res.data.images.length)
-        return message.reply("Generation failed.");
-
-      const urls = res.data.images.slice(0, 4);
-
-      const buffers = await Promise.all(
-        urls.map(u => axios.get(u, { responseType: "arraybuffer" }).then(r => Buffer.from(r.data)))
-      );
-
-      const meta = await sharp(buffers[0]).metadata();
-      const w = meta.width, h = meta.height;
-
-      const gridBuffer = await sharp({
-        create: { width: w * 2, height: h * 2, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
-      }).composite([
-        { input: buffers[0], left: 0, top: 0 },
-        { input: buffers[1], left: w, top: 0 },
-        { input: buffers[2], left: 0, top: h },
-        { input: buffers[3], left: w, top: h }
-      ]).png().toBuffer();
-
-      const gridFile = path.join(__dirname, `MJ_GRID_${event.senderID}.png`);
-      fs.writeFileSync(gridFile, gridBuffer);
-
-      await new Promise(resolve => {
-        api.sendMessage(
-          {
-            body: `✨ MIDJOURNEY RESULT\nReply with U1 / U2 / U3 / U4 to UPSCALE.`,
-            attachment: fs.createReadStream(gridFile)
-          },
-          event.threadID,
-          (err, info) => {
-            fs.unlinkSync(gridFile);
-            if (info?.messageID) {
-              global.GoatBot.onReply.set(info.messageID, {
-                commandName: "mj",
-                messageID: info.messageID,
-                senderID: event.senderID,
-                buffers,
-                w,
-                h
-              });
-            }
-            resolve();
-          },
-          event.messageID
-        );
-      });
-
-      api.setMessageReaction("✅", event.messageID, () => {}, true);
-
-    } catch (e) {
-      console.log("MJ ERROR:", e?.response?.data || e.message);
-      message.reply("Error generating images.");
+    name: "midjourney",
+    aliases: ["mj", "imagine"],
+    version: "20.0",
+    author: "NeoKEX",
+    countDown: 20,
+    role: 0,
+    longDescription: "Generate 4 Midjourney images in a grid and select one or all by replying.",
+    category: "ai-image",
+    guide: {
+      en: "{pn} <prompt>\n\nExample: {pn} a futuristic city at sunset\n\nAfter receiving the grid, reply with 1, 2, 3, 4 to select one image, or 'all' to get all images."
     }
   },
 
-  onReply: async function({ api, event, message }) {
-    const reply = global.GoatBot.onReply.get(event.messageReply?.messageID);
-    if (!reply || reply.senderID !== event.senderID) return;
+  onStart: async function({ message, args, event, commandName }) {
+    let prompt = args.join(" ");
+    const cacheDir = path.join(__dirname, 'cache');
 
-    const text = event.body.trim().toUpperCase();
-    const indexMap = { U1: 0, U2: 1, U3: 2, U4: 3 };
-    if (!(text in indexMap)) return message.reply("Send U1, U2, U3 or U4.");
+    if (!fs.existsSync(cacheDir)) await fs.mkdirp(cacheDir);
 
-    const idx = indexMap[text];
-    const { buffers, w, h } = reply;
+    if (!prompt) {
+      return message.reply("❌ Please provide a prompt to generate an image.");
+    }
 
+    message.reaction("⏳", event.messageID);
+
+    const tempPaths = [];
+    let gridPath = '';
+    
     try {
-      const upscaled = await sharp(buffers[idx])
-        .resize(w * 2, h * 2, { kernel: sharp.kernel.lanczos3 })
-        .png()
-        .toBuffer();
+      const cleanedPrompt = prompt.trim();
+      
+      const apiResponse = await axios.get(`${API_ENDPOINT}?prompt=${encodeURIComponent(cleanedPrompt)}&usepolling=false`, { timeout: 300000 }); 
+      const data = apiResponse.data;
 
-      const file = path.join(__dirname, `MJ_U${idx + 1}_${event.senderID}.png`);
-      fs.writeFileSync(file, upscaled);
+      if (!data.status || data.status === "failed" || !data.results || data.results.length < 4) {
+        const errorDetail = data.message || "API did not return a successful status or enough images (expected 4).";
+        throw new Error(`Generation failed: ${errorDetail}`);
+      }
+      
+      const finalUrls = data.results.slice(0, 4); 
 
-      api.sendMessage(
-        { body: `🖼️ U${idx + 1}`, attachment: fs.createReadStream(file) },
-        event.threadID,
-        () => fs.unlinkSync(file),
-        event.messageID
-      );
+      for (let i = 0; i < finalUrls.length; i++) {
+          const result = await downloadSingleImage(finalUrls[i], cacheDir, i + 1);
+          tempPaths.push(result.path);
+      }
 
-      global.GoatBot.onReply.delete(event.messageReply.messageID);
+      gridPath = path.join(cacheDir, `mj_grid_${Date.now()}.png`);
+      await createGridImage(tempPaths, gridPath);
+      
+      message.reply({
+        body: `✨ Midjourney generated 4 images\n\n📷 Reply with 1, 2, 3, 4 to select one image, or "all" to get all images.`,
+        attachment: fs.createReadStream(gridPath)
+      }, (err, info) => {
+        if (!err) {
+            global.GoatBot.onReply.set(info.messageID, {
+                commandName,
+                messageID: info.messageID,
+                author: event.senderID,
+                imageUrls: finalUrls,
+                tempPaths: tempPaths,
+                gridPath: gridPath,
+                prompt: cleanedPrompt
+            });
+        } else {
+            for (const p of tempPaths) {
+                if (fs.existsSync(p)) fs.unlinkSync(p);
+            }
+            if (gridPath && fs.existsSync(gridPath)) fs.unlinkSync(gridPath);
+        }
+      });
+      
+      message.reaction("✅", event.messageID);
 
-    } catch (e) {
-      console.log("UPSCALE ERROR:", e.message);
-      message.reply("Upscale failed.");
+    } catch (error) {
+      message.reaction("❌", event.messageID);
+
+      for (const p of tempPaths) {
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+      }
+      if (gridPath && fs.existsSync(gridPath)) fs.unlinkSync(gridPath);
+
+      const errorMessage = error.response ? error.response.data.error || error.response.data.message || `HTTP Error: ${error.response.status}` : error.message;
+      console.error("Midjourney Command Error:", error);
+      message.reply(`❌ Image generation failed: ${errorMessage}`);
+    }
+  },
+
+  onReply: async function({ message, event, Reply }) { 
+    const { imageUrls, tempPaths, gridPath, author } = Reply;
+    const cacheDir = path.join(__dirname, 'cache');
+
+    if (event.senderID !== author) {
+        return;
+    }
+    
+    const userReply = event.body.trim().toLowerCase();
+    const selectedImagePaths = [];
+    
+    try {
+        message.reaction("⏳", event.messageID);
+
+        if (userReply === 'all') {
+            for (let i = 0; i < imageUrls.length; i++) {
+                const result = await downloadSingleImage(imageUrls[i], cacheDir, `final_all_${i + 1}`);
+                selectedImagePaths.push(result.path);
+            }
+            
+            await message.reply({
+                body: `✨ Here are all your images`,
+                attachment: selectedImagePaths.map(p => fs.createReadStream(p))
+            });
+        } else {
+            const selection = parseInt(userReply);
+            
+            if (isNaN(selection) || selection < 1 || selection > 4) {
+                message.reaction("", event.messageID);
+                return;
+            }
+
+            const selectedUrl = imageUrls[selection - 1];
+
+            if (!selectedUrl) {
+                return message.reply("❌ Invalid selection. Please reply with 1, 2, 3, 4, or 'all'.");
+            }
+
+            const result = await downloadSingleImage(selectedUrl, cacheDir, `final_${selection}`);
+            selectedImagePaths.push(result.path);
+            
+            await message.reply({
+                body: `✨ Here is your image`,
+                attachment: fs.createReadStream(selectedImagePaths[0])
+            });
+        }
+
+        message.reaction("✅", event.messageID);
+
+    } catch (error) {
+        message.reaction("❌", event.messageID);
+        console.error("Selection Download Error:", error);
+        message.reply(`❌ Failed to retrieve selected image: ${error.message}`);
+    } finally {
+        const cleanup = async () => {
+            for (const p of selectedImagePaths) {
+                if (p && fs.existsSync(p)) {
+                    await fs.unlink(p).catch(console.error);
+                }
+            }
+            if (tempPaths) {
+                await Promise.all(tempPaths.map(p => 
+                    fs.existsSync(p) ? fs.unlink(p).catch(console.error) : Promise.resolve()
+                ));
+            }
+            if (gridPath && fs.existsSync(gridPath)) {
+                await fs.unlink(gridPath).catch(console.error);
+            }
+        };
+        cleanup().catch(console.error);
+
+        global.GoatBot.onReply.delete(Reply.messageID);
     }
   }
 };
