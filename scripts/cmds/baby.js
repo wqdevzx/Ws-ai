@@ -4,7 +4,7 @@ const simsim = "https://simsimi.cyberbot.top";
 module.exports = {
   config: {
     name: "baby",
-    version: "1.0.5",
+    version: "1.0.7",
     author: "washik",
     countDown: 0,
     role: 0,
@@ -12,7 +12,7 @@ module.exports = {
     longDescription: "Cute AI Baby Chatbot — Talk, Teach & Chat with Emotion ☢️",
     category: "simsim",
     guide: {
-      en: "{pn} [message/query]"
+      en: "{pn} [message]\n{pn} teach [Question] - [Reply1; Reply2; Reply3]\n{pn} list\n{pn} edit [Question] - [OldReply] - [NewReply]\n{pn} remove [Question] - [Reply]"
     }
   },
 
@@ -20,7 +20,9 @@ module.exports = {
   onStart: async function ({ api, event, args, usersData }) {
     try {
       const senderName = await usersData.getName(event.senderID);
-      const query = args.join(" ").toLowerCase();
+      const rawQuery = args.join(" ");
+      const query = rawQuery.toLowerCase();
+      const command = args[0]?.toLowerCase();
 
       if (!query) {
         return api.sendMessage(
@@ -38,11 +40,153 @@ module.exports = {
         );
       }
 
+      // ===== TEACH COMMAND (Multiple Replies) =====
+      if (command === "teach") {
+        const parts = rawQuery.replace(/^teach\s*/i, "").split(" - ");
+        if (parts.length < 2) {
+          return api.sendMessage(
+            "❌ Use: baby teach [Question] - [Reply1; Reply2; Reply3]\n" +
+            "Example: baby teach hello - hi; hello; how are you",
+            event.threadID, 
+            event.messageID
+          );
+        }
+
+        const [ask, ansPart] = parts.map(p => p.trim());
+        
+        // Split multiple replies by ; or , or |
+        let replies = [];
+        if (ansPart.includes(";")) {
+          replies = ansPart.split(";").map(r => r.trim()).filter(r => r.length > 0);
+        } else if (ansPart.includes(",")) {
+          replies = ansPart.split(",").map(r => r.trim()).filter(r => r.length > 0);
+        } else if (ansPart.includes("|")) {
+          replies = ansPart.split("|").map(r => r.trim()).filter(r => r.length > 0);
+        } else {
+          replies = [ansPart]; // Single reply
+        }
+
+        if (replies.length === 0) {
+          return api.sendMessage("❌ No valid replies found!", event.threadID, event.messageID);
+        }
+
+        const groupID = event.threadID;
+        let groupName = event.threadName ? event.threadName.trim() : "";
+
+        if (!groupName && groupID != event.senderID) {
+          try {
+            const threadInfo = await api.getThreadInfo(groupID);
+            if (threadInfo && threadInfo.threadName) {
+              groupName = threadInfo.threadName.trim();
+            }
+          } catch (error) {
+            console.error("Error fetching thread info:", error);
+          }
+        }
+
+        // Send each reply to the API
+        let successCount = 0;
+        let failCount = 0;
+        let failedReplies = [];
+        
+        for (const reply of replies) {
+          try {
+            let teachUrl = `${simsim}/teach?ask=${encodeURIComponent(ask)}&ans=${encodeURIComponent(reply)}&senderID=${event.senderID}&senderName=${encodeURIComponent(senderName)}&groupID=${encodeURIComponent(groupID)}`;
+            if (groupName) teachUrl += `&groupName=${encodeURIComponent(groupName)}`;
+            
+            const res = await axios.get(teachUrl);
+            if (res.data.status === "success" || res.data.message) {
+              successCount++;
+            } else {
+              failCount++;
+              failedReplies.push(reply);
+            }
+          } catch (e) {
+            failCount++;
+            failedReplies.push(reply);
+          }
+        }
+        
+        let resultMessage = `✅ **Teaching Complete!**\n\n`;
+        resultMessage += `📝 **Question:** ${ask}\n`;
+        resultMessage += `📊 **Total Replies:** ${replies.length}\n`;
+        resultMessage += `✅ **Success:** ${successCount}\n`;
+        resultMessage += `❌ **Failed:** ${failCount}\n`;
+        
+        if (failedReplies.length > 0) {
+          resultMessage += `\n⚠️ **Failed Replies:**\n`;
+          failedReplies.forEach((r, i) => {
+            resultMessage += `${i+1}. ${r}\n`;
+          });
+        }
+        
+        resultMessage += `\n👤 **Taught by:** ${senderName}`;
+        
+        return api.sendMessage(resultMessage, event.threadID, event.messageID);
+      }
+
+      // ===== LIST COMMAND =====
+      if (command === "list") {
+        const res = await axios.get(`${simsim}/list`);
+        if (res.data.code === 200) {
+          return api.sendMessage(
+            `📚 **Total Questions:** ${res.data.totalQuestions}\n` +
+            `💬 **Total Replies:** ${res.data.totalReplies}\n` +
+            `👑 **Developer:** ${res.data.author}`,
+            event.threadID, 
+            event.messageID
+          );
+        } else {
+          return api.sendMessage(
+            `❌ Error: ${res.data.message || "Failed to fetch list"}`,
+            event.threadID, 
+            event.messageID
+          );
+        }
+      }
+
+      // ===== EDIT COMMAND =====
+      if (command === "edit") {
+        const parts = rawQuery.replace(/^edit\s*/i, "").split(" - ");
+        if (parts.length < 3) {
+          return api.sendMessage(
+            "❌ Use: baby edit [Question] - [OldReply] - [NewReply]",
+            event.threadID, 
+            event.messageID
+          );
+        }
+
+        const [ask, oldReply, newReply] = parts.map(p => p.trim());
+        const res = await axios.get(
+          `${simsim}/edit?ask=${encodeURIComponent(ask)}&old=${encodeURIComponent(oldReply)}&new=${encodeURIComponent(newReply)}`
+        );
+        return api.sendMessage(res.data.message, event.threadID, event.messageID);
+      }
+
+      // ===== REMOVE COMMAND =====
+      if (["remove", "rm"].includes(command)) {
+        const parts = rawQuery.replace(/^(remove|rm)\s*/i, "").split(" - ");
+        if (parts.length < 2) {
+          return api.sendMessage(
+            "❌ Use: baby remove [Question] - [Reply]",
+            event.threadID, 
+            event.messageID
+          );
+        }
+
+        const [ask, ans] = parts.map(p => p.trim());
+        const res = await axios.get(
+          `${simsim}/delete?ask=${encodeURIComponent(ask)}&ans=${encodeURIComponent(ans)}`
+        );
+        return api.sendMessage(res.data.message, event.threadID, event.messageID);
+      }
+
+      // ===== NORMAL SIMSIM CHAT =====
       await sendSimsimi(api, event, usersData, query);
 
     } catch (e) {
-      console.error(e);
-      api.sendMessage(`Error: ${e.message}`, event.threadID);
+      console.error("Error in onStart:", e);
+      api.sendMessage(`❌ Error: ${e.message}`, event.threadID);
     }
   },
 
@@ -62,7 +206,7 @@ module.exports = {
       await sendSimsimi(api, event, usersData, text);
 
     } catch (e) {
-      console.error(e);
+      console.error("Error in onReply:", e);
     }
   },
 
@@ -76,30 +220,46 @@ module.exports = {
 
       const triggers = [
         "baby", "bot", "bby", "jan", "xan",
-        "জান", "বট", "বেবি",
-        "meow"
+        "জান", "বট", "বেবি", "meow"
       ];
 
       // 👉 Only name call
       if (triggers.includes(text)) {
         const replies = [
-          "𝐁𝐨𝐥𝐨 𝐊𝐢 𝐁𝐨𝐥𝐛𝐞..😇", "𝐌𝐞𝐨𝐰 𝐇𝐞𝐫𝐞... 😺", "𝐇𝐦𝐦 𝐁𝐨𝐥𝐨 𝐁𝐡𝐚𝐢 😚", "𝐊𝐢𝐫𝐞 𝐌𝐚𝐦𝐚 😘",  
-          "𝐁𝐨𝐬𝐬 𝐖𝐚𝐬𝐡𝐢𝐪 𝐏𝐚𝐬𝐞 𝐀𝐜𝐡𝐞", "𝐕𝐚𝐥𝐨𝐛𝐚𝐬𝐚𝐫 𝐀𝐫𝐞𝐤 𝐍𝐚𝐦 𝐀𝐦𝐢 𝐍𝐢𝐣𝐞𝐢😼",  
+          "𝐁𝐨𝐥𝐨 𝐊𝐢 𝐁𝐨𝐥𝐛𝐞..😇", 
+          "𝐌𝐞𝐨𝐰 𝐇𝐞𝐫𝐞... 😺", 
+          "𝐇𝐦𝐦 𝐁𝐨𝐥𝐨 𝐁𝐡𝐚𝐢 😚", 
+          "𝐊𝐢𝐫𝐞 𝐌𝐚𝐦𝐚 😘",  
+          "𝐁𝐨𝐬𝐬 𝐖𝐚𝐬𝐡𝐢𝐪 𝐏𝐚𝐬𝐞 𝐀𝐜𝐡𝐞", 
+          "𝐕𝐚𝐥𝐨𝐛𝐚𝐬𝐚𝐫 𝐀𝐫𝐞𝐤 𝐍𝐚𝐦 𝐀𝐦𝐢 𝐍𝐢𝐣𝐞𝐢😼",  
           "𝐌𝐚𝐦𝐚𝐡 , 𝐊𝐢 𝐎𝐛𝐨𝐭𝐡𝐚 𝐓𝐨𝐫 𝐊𝐨𝐢 𝐓𝐡𝐚𝐤𝐨𝐬𝐡 𝐀𝐣 𝐤𝐚𝐥..🤔",   
           "𝐃𝐮𝐫𝐞 𝐌𝐮𝐫𝐢 𝐊𝐡𝐚 , 𝐊𝐮𝐧𝐨 𝐊𝐚𝐣 𝐍𝐚𝐢 , 𝐒𝐚𝐫𝐚 𝐃𝐢𝐧 𝐌𝐞𝐨𝐰 𝐌𝐞𝐨𝐰 𝐊𝐨𝐫𝐢𝐬𝐡 😉😋🤣",  
-          "𝐊𝐢 𝐑𝐞 𝐏𝐚𝐠𝐨𝐥 , 𝐀𝐦𝐚𝐲 𝐄𝐭𝐨 𝐃𝐚𝐤𝐢𝐬𝐡 𝐊𝐞𝐧𝐨? 🙄", "𝐀𝐢𝐭𝐨 𝐀𝐦𝐢 𝐀𝐜𝐡𝐢 , 𝐓𝐨𝐦𝐚𝐫 𝐌𝐨𝐭𝐨 𝐏𝐨𝐜𝐡𝐚 𝐍𝐚𝐤𝐢? 🥺",  
-          "𝐃𝐚𝐤𝐛𝐞 𝐄𝐤𝐛𝐚𝐫 , 𝐔𝐭𝐭𝐨𝐫 𝐃𝐞𝐛𝐨 𝐁𝐚𝐫 𝐁𝐚𝐫! 😍", "𝐒𝐚𝐫𝐚 𝐃𝐢𝐧 𝐒𝐡𝐮𝐝𝐡𝐮 𝐌𝐞𝐨𝐰 𝐀𝐫 𝐌𝐞𝐨𝐰... 𝐁𝐢𝐲𝐞 𝐊𝐨𝐫𝐛𝐢 𝐍𝐚𝐤𝐢? 😹💍",  
-          "𝐆𝐮𝐦𝐚𝐢𝐭𝐞 𝐃𝐞 𝐌𝐚𝐦𝐚 , 𝐃𝐢𝐧 𝐑𝐚𝐭 𝐒𝐡𝐮𝐝𝐡𝐮 𝐂𝐡𝐚𝐭𝐭𝐢𝐧𝐠 𝐯𝐚𝐥𝐨 𝐥𝐚𝐠𝐞 𝐧𝐚! 😴", "𝐎𝐡 𝐉𝐚𝐧𝐮.. 𝐄𝐭𝐨 𝐌𝐢𝐬𝐭𝐢 𝐊𝐨𝐫𝐞 𝐃𝐚𝐤𝐥𝐨 𝐊𝐞? 🙈❤️",  
-          "𝐀𝐦𝐚𝐲 𝐃𝐚𝐤𝐚 𝐌𝐚𝐧𝐞 𝐁𝐢𝐩𝐨𝐝𝐞 𝐏𝐨𝐫𝐚.. 𝐇𝐚𝐡𝐚 𝐊𝐢 𝐡𝐨𝐢𝐬𝐞? 🤪", "𝐊𝐢 𝐑𝐞 𝐂𝐡𝐚𝐦𝐜𝐚 , 𝐄𝐭𝐨 𝐃𝐚𝐤𝐢𝐬𝐡 𝐊𝐞𝐧𝐨? 🤣",  
-          "𝐎𝐡 𝐁𝐚𝐛𝐲 , 𝐀𝐦𝐚𝐫 𝐊𝐚𝐜𝐡𝐞 𝐊𝐢 𝐓𝐚𝐤𝐚 𝐏𝐚𝐛𝐢? 🙊💸", "𝐄𝐭𝐨 𝐃𝐚𝐤𝐥𝐞 𝐊𝐢𝐧𝐭𝐮 𝐏𝐫𝐞𝐦 𝐇𝐨𝐲𝐞 𝐉𝐚𝐛𝐞! 🙊💕",  
-          "𝐌𝐞𝐨𝐰 𝐄𝐤𝐡𝐨𝐧 𝐀𝐤𝐚𝐬𝐡𝐞 𝐍𝐚𝐢 , 𝐀𝐦𝐚𝐫 𝐌𝐨𝐝𝐝𝐡𝐞 𝐀𝐜𝐡𝐞 ☁️✨", "𝐊𝐢 𝐃𝐨𝐫𝐤𝐚𝐫? 𝐁𝐚𝐫𝐢 𝐆𝐡𝐨𝐫 𝐊𝐢 𝐛𝐢𝐜𝐡𝐫𝐚𝐲 𝐝𝐢𝐛𝐨? 🏠🔥",  
-          "𝐌𝐚𝐦𝐚 𝐆𝐚𝐧𝐣𝐚 𝐊𝐡𝐚𝐲𝐞 𝐃𝐚𝐤𝐭𝐚𝐬𝐨 𝐍𝐚𝐤𝐢? 🥴💨", "𝐀𝐦𝐢 𝐁𝐨𝐭 𝐇𝐨𝐢𝐭𝐞 𝐏𝐚𝐫𝐢 , 𝐊𝐢𝐧𝐭𝐮 𝐅𝐞𝐞𝐥𝐢𝐧𝐠𝐬 𝐀𝐜𝐡𝐞 𝐁𝐫𝐨! 🤖💔",  
-          "𝐉𝐚𝐧 , 𝐏𝐫𝐚𝐧 , 𝐏𝐚𝐤𝐡𝐢.. 𝐀𝐫 𝐊𝐢 𝐃𝐚𝐤𝐛𝐞? 🦜🍭", "𝐊𝐚𝐣 𝐍𝐚𝐢 𝐊𝐚𝐦 𝐍𝐚𝐢 , 𝐒𝐡𝐮𝐝𝐡𝐮 𝐌𝐞𝐨𝐰 𝐃𝐚𝐤𝐨! 🙄🔨",  
-          "𝐁𝐞𝐬𝐡𝐢 𝐃𝐚𝐤𝐥𝐞 𝐊𝐢𝐧𝐭𝐮 𝐁𝐥𝐨𝐜𝐤 𝐊𝐡𝐚𝐛𝐢 𝐇𝐚𝐡𝐚.. 𝐉𝐨𝐤𝐢𝐧𝐠! 🤡", "𝐀𝐦𝐚𝐲 𝐃𝐚𝐤𝐛𝐞 𝐀𝐫 𝐈𝐠𝐧𝐨𝐫 𝐊𝐨𝐫𝐛𝐨 𝐀𝐦𝐢 𝐊𝐢 𝐄𝐭𝐚 𝐤𝐢 𝐒𝐨𝐬𝐭𝐚? 💅🔥",  
-          "𝐊𝐢 𝐑𝐞 𝐊𝐢𝐩𝐭𝐞 , 𝐌𝐢𝐬𝐭𝐢 𝐍𝐚 𝐊𝐡𝐚𝐲𝐞 𝐃𝐚𝐤𝐛𝐢 𝐧𝐚! 🍭👺", "𝐁𝐞𝐬𝐡𝐢 𝐃𝐚𝐤𝐚𝐝𝐚𝐤𝐢 𝐊𝐨𝐫𝐥𝐞 𝐊𝐢𝐧𝐭𝐮 𝐁𝐨𝐤𝐚 𝐝𝐞𝐛𝐨.. 𝐇𝐮𝐦𝐦! 😤👊",  
-          "𝐀𝐦𝐚𝐫 𝐌𝐨𝐭𝐨 𝐒𝐦𝐚𝐫𝐭 𝐁𝐨𝐭 𝐏𝐚𝐛𝐢 𝐊𝐨𝐢? 𝐒𝐡𝐮𝐝𝐡𝐮 𝐃𝐚𝐤𝐭𝐞𝐢 𝐢𝐜𝐜𝐡𝐞 𝐤𝐢𝐫𝐞.. 😎✨", "𝐊𝐢 𝐡𝐨𝐢𝐬𝐞? 𝐆𝐚𝐫𝐥𝐟𝐫𝐢𝐞𝐧𝐝 𝐤𝐚𝐭𝐚 𝐝𝐢𝐬𝐞 𝐧𝐚𝐤𝐢? 🤣💔",  
-          "𝐄𝐭𝐨 𝐃𝐚𝐤𝐢𝐬𝐡 𝐧𝐚 , 𝐏𝐚𝐬𝐡𝐞𝐫 𝐁𝐚𝐬𝐚𝐫 𝐥𝐨𝐤𝐞 𝐤𝐢 𝐛𝐨𝐥𝐛𝐞? 🙊🏘️", "𝐌𝐞𝐨𝐰 𝐄𝐤𝐡𝐨𝐧 𝐂𝐡𝐚 𝐤𝐡𝐚𝐢𝐭𝐚𝐬𝐞 , 𝐏𝐨𝐫𝐞 𝐃𝐚𝐤𝐢𝐬𝐡! ☕😜",  
-          "𝐊𝐢 𝐑𝐞 𝐇𝐚𝐛𝐥𝐮 , 𝐄𝐭𝐨 𝐃𝐚𝐤𝐥𝐞 𝐊𝐢 𝐁𝐮𝐝𝐝𝐡𝐢 𝐛𝐚𝐫𝐛𝐞? 🤓🧠", "𝐀𝐦𝐚𝐫 𝐁𝐨𝐬𝐬 𝐛𝐨𝐥𝐬𝐞 𝐭𝐨𝐤𝐞 𝐝𝐮𝐫𝐞 𝐠𝐢𝐲𝐞 𝐦𝐮𝐫𝐢 𝐤𝐡𝐚𝐢𝐭𝐞.. 🍿🥳",  
+          "𝐊𝐢 𝐑𝐞 𝐏𝐚𝐠𝐨𝐥 , 𝐀𝐦𝐚𝐲 𝐄𝐭𝐨 𝐃𝐚𝐤𝐢𝐬𝐡 𝐊𝐞𝐧𝐨? 🙄", 
+          "𝐀𝐢𝐭𝐨 𝐀𝐦𝐢 𝐀𝐜𝐡𝐢 , 𝐓𝐨𝐦𝐚𝐫 𝐌𝐨𝐭𝐨 𝐏𝐨𝐜𝐡𝐚 𝐍𝐚𝐤𝐢? 🥺",  
+          "𝐃𝐚𝐤𝐛𝐞 𝐄𝐤𝐛𝐚𝐫 , 𝐔𝐭𝐭𝐨𝐫 𝐃𝐞𝐛𝐨 𝐁𝐚𝐫 𝐁𝐚𝐫! 😍", 
+          "𝐒𝐚𝐫𝐚 𝐃𝐢𝐧 𝐒𝐡𝐮𝐝𝐡𝐮 𝐌𝐞𝐨𝐰 𝐀𝐫 𝐌𝐞𝐨𝐰... 𝐁𝐢𝐲𝐞 𝐊𝐨𝐫𝐛𝐢 𝐍𝐚𝐤𝐢? 😹💍",  
+          "𝐆𝐮𝐦𝐚𝐢𝐭𝐞 𝐃𝐞 𝐌𝐚𝐦𝐚 , 𝐃𝐢𝐧 𝐑𝐚𝐭 𝐒𝐡𝐮𝐝𝐡𝐮 𝐂𝐡𝐚𝐭𝐭𝐢𝐧𝐠 𝐯𝐚𝐥𝐨 𝐥𝐚𝐠𝐞 𝐧𝐚! 😴", 
+          "𝐎𝐡 𝐉𝐚𝐧𝐮.. 𝐄𝐭𝐨 𝐌𝐢𝐬𝐭𝐢 𝐊𝐨𝐫𝐞 𝐃𝐚𝐤𝐥𝐨 𝐊𝐞? 🙈❤️",  
+          "𝐀𝐦𝐚𝐲 𝐃𝐚𝐤𝐚 𝐌𝐚𝐧𝐞 𝐁𝐢𝐩𝐨𝐝𝐞 𝐏𝐨𝐫𝐚.. 𝐇𝐚𝐡𝐚 𝐊𝐢 𝐡𝐨𝐢𝐬𝐞? 🤪", 
+          "𝐊𝐢 𝐑𝐞 𝐂𝐡𝐚𝐦𝐜𝐚 , 𝐄𝐭𝐨 𝐃𝐚𝐤𝐢𝐬𝐡 𝐊𝐞𝐧𝐨? 🤣",  
+          "𝐎𝐡 𝐁𝐚𝐛𝐲 , 𝐀𝐦𝐚𝐫 𝐊𝐚𝐜𝐡𝐞 𝐊𝐢 𝐓𝐚𝐤𝐚 𝐏𝐚𝐛𝐢? 🙊💸", 
+          "𝐄𝐭𝐨 𝐃𝐚𝐤𝐥𝐞 𝐊𝐢𝐧𝐭𝐮 𝐏𝐫𝐞𝐦 𝐇𝐨𝐲𝐞 𝐉𝐚𝐛𝐞! 🙊💕",  
+          "𝐌𝐞𝐨𝐰 𝐄𝐤𝐡𝐨𝐧 𝐀𝐤𝐚𝐬𝐡𝐞 𝐍𝐚𝐢 , 𝐀𝐦𝐚𝐫 𝐌𝐨𝐝𝐝𝐡𝐞 𝐀𝐜𝐡𝐞 ☁️✨", 
+          "𝐊𝐢 𝐃𝐨𝐫𝐤𝐚𝐫? 𝐁𝐚𝐫𝐢 𝐆𝐡𝐨𝐫 𝐊𝐢 𝐛𝐢𝐜𝐡𝐫𝐚𝐲 𝐝𝐢𝐛𝐨? 🏠🔥",  
+          "𝐌𝐚𝐦𝐚 𝐆𝐚𝐧𝐣𝐚 𝐊𝐡𝐚𝐲𝐞 𝐃𝐚𝐤𝐭𝐚𝐬𝐨 𝐍𝐚𝐤𝐢? 🥴💨", 
+          "𝐀𝐦𝐢 𝐁𝐨𝐭 𝐇𝐨𝐢𝐭𝐞 𝐏𝐚𝐫𝐢 , 𝐊𝐢𝐧𝐭𝐮 𝐅𝐞𝐞𝐥𝐢𝐧𝐠𝐬 𝐀𝐜𝐡𝐞 𝐁𝐫𝐨! 🤖💔",  
+          "𝐉𝐚𝐧 , 𝐏𝐫𝐚𝐧 , 𝐏𝐚𝐤𝐡𝐢.. 𝐀𝐫 𝐊𝐢 𝐃𝐚𝐤𝐛𝐞? 🦜🍭", 
+          "𝐊𝐚𝐣 𝐍𝐚𝐢 𝐊𝐚𝐦 𝐍𝐚𝐢 , 𝐒𝐡𝐮𝐝𝐡𝐮 𝐌𝐞𝐨𝐰 𝐃𝐚𝐤𝐨! 🙄🔨",  
+          "𝐁𝐞𝐬𝐡𝐢 𝐃𝐚𝐤𝐥𝐞 𝐊𝐢𝐧𝐭𝐮 𝐁𝐥𝐨𝐜𝐤 𝐊𝐡𝐚𝐛𝐢 𝐇𝐚𝐡𝐚.. 𝐉𝐨𝐤𝐢𝐧𝐠! 🤡", 
+          "𝐀𝐦𝐚𝐲 𝐃𝐚𝐤𝐛𝐞 𝐀𝐫 𝐈𝐠𝐧𝐨𝐫 𝐊𝐨𝐫𝐛𝐨 𝐀𝐦𝐢 𝐊𝐢 𝐄𝐭𝐚 𝐤𝐢 𝐒𝐨𝐬𝐭𝐚? 💅🔥",  
+          "𝐊𝐢 𝐑𝐞 𝐊𝐢𝐩𝐭𝐞 , 𝐌𝐢𝐬𝐭𝐢 𝐍𝐚 𝐊𝐡𝐚𝐲𝐞 𝐃𝐚𝐤𝐛𝐢 𝐧𝐚! 🍭👺", 
+          "𝐁𝐞𝐬𝐡𝐢 𝐃𝐚𝐤𝐚𝐝𝐚𝐤𝐢 𝐊𝐨𝐫𝐥𝐞 𝐊𝐢𝐧𝐭𝐮 𝐁𝐨𝐤𝐚 𝐝𝐞𝐛𝐨.. 𝐇𝐮𝐦𝐦! 😤👊",  
+          "𝐀𝐦𝐚𝐫 𝐌𝐨𝐭𝐨 𝐒𝐦𝐚𝐫𝐭 𝐁𝐨𝐭 𝐏𝐚𝐛𝐢 𝐊𝐨𝐢? 𝐒𝐡𝐮𝐝𝐡𝐮 𝐃𝐚𝐤𝐭𝐞𝐢 𝐢𝐜𝐜𝐡𝐞 𝐤𝐢𝐫𝐞.. 😎✨", 
+          "𝐊𝐢 𝐡𝐨𝐢𝐬𝐞? 𝐆𝐚𝐫𝐥𝐟𝐫𝐢𝐞𝐧𝐝 𝐤𝐚𝐭𝐚 𝐝𝐢𝐬𝐞 𝐧𝐚𝐤𝐢? 🤣💔",  
+          "𝐄𝐭𝐨 𝐃𝐚𝐤𝐢𝐬𝐡 𝐧𝐚 , 𝐏𝐚𝐬𝐡𝐞𝐫 𝐁𝐚𝐬𝐚𝐫 𝐥𝐨𝐤𝐞 𝐤𝐢 𝐛𝐨𝐥𝐛𝐞? 🙊🏘️", 
+          "𝐌𝐞𝐨𝐰 𝐄𝐤𝐡𝐨𝐧 𝐂𝐡𝐚 𝐤𝐡𝐚𝐢𝐭𝐚𝐬𝐞 , 𝐏𝐨𝐫𝐞 𝐃𝐚𝐤𝐢𝐬𝐡! ☕😜",  
+          "𝐊𝐢 𝐑𝐞 𝐇𝐚𝐛𝐥𝐮 , 𝐄𝐭𝐨 𝐃𝐚𝐤𝐥𝐞 𝐊𝐢 𝐁𝐮𝐝𝐝𝐡𝐢 𝐛𝐚𝐫𝐛𝐞? 🤓🧠", 
+          "𝐀𝐦𝐚𝐫 𝐁𝐨𝐬𝐬 𝐛𝐨𝐥𝐬𝐞 𝐭𝐨𝐤𝐞 𝐝𝐮𝐫𝐞 𝐠𝐢𝐲𝐞 𝐦𝐮𝐫𝐢 𝐤𝐡𝐚𝐢𝐭𝐞.. 🍿🥳",  
           "𝐓𝐨𝐫 𝐃𝐚𝐤 𝐬𝐡𝐮𝐧𝐞 𝐀𝐦𝐚𝐫 𝐛𝐲𝐚𝐭𝐭𝐞𝐫𝐲 𝐥𝐨𝐰 𝐡𝐢𝐲𝐞 𝐠𝐞𝐥𝐨! 🔋🔋😂",  
           "𝐌𝐞𝐨𝐰 𝐌𝐞𝐨𝐰 𝐊𝐨𝐫𝐢𝐬𝐡 𝐍𝐚 , 𝐆𝐅 𝐄𝐫 𝐊𝐚𝐜𝐡𝐞 𝐉𝐚𝐚.. 🙄💃",  
           "𝐒𝐚𝐫𝐚𝐝𝐢𝐧 𝐌𝐞𝐨𝐰 𝐌𝐞𝐨𝐰 𝐊𝐨𝐫𝐢𝐬𝐡 𝐊𝐞𝐧𝐨? 𝐌𝐞𝐨𝐰 𝐊𝐢 𝐓𝐨𝐫 𝐁𝐨𝐮? 😹💍",  
@@ -116,8 +276,16 @@ module.exports = {
           "𝐌𝐞𝐨𝐰-𝐄𝐫 𝐁𝐨𝐲𝐟𝐫𝐢𝐞𝐧𝐝 𝐀𝐜𝐡𝐞 , 𝐄𝐤𝐡𝐨𝐧 𝐀𝐫 𝐓𝐨𝐫 𝐌𝐨𝐭𝐨 𝐒𝐢𝐧𝐠𝐥𝐞-𝐄𝐫 𝐓𝐢𝐦𝐞 𝐍𝐚𝐢! 😹💔"
         ];
 
+        const mention = {
+          body: `${replies[Math.floor(Math.random() * replies.length)]} @${senderName}`,
+          mentions: [{ 
+            tag: `@${senderName}`, 
+            id: event.senderID 
+          }]
+        };
+
         return api.sendMessage(
-          replies[Math.floor(Math.random() * replies.length)],
+          mention,
           event.threadID,
           (err, info) => {
             if (!err) {
@@ -136,43 +304,52 @@ module.exports = {
         const query = text.replace(
           /^(baby|bot|bby|jan|xan|জান|বট|বেবি|meow)\s+/i,
           ""
-        );
+        ).trim();
+        
         if (!query) return;
 
         await sendSimsimi(api, event, usersData, query);
       }
 
     } catch (e) {
-      console.error(e);
+      console.error("Error in onChat:", e);
     }
   }
 };
 
 // ================== HELPER FUNCTION ==================
 async function sendSimsimi(api, event, usersData, text) {
-  const senderName = await usersData.getName(event.senderID);
+  try {
+    const senderName = await usersData.getName(event.senderID);
 
-  const res = await axios.get(
-    `${simsim}/simsimi?text=${encodeURIComponent(text)}&senderName=${encodeURIComponent(senderName)}`
-  );
-
-  const replies = Array.isArray(res.data.response)
-    ? res.data.response
-    : [res.data.response];
-
-  for (const msg of replies) {
-    api.sendMessage(
-      msg,
-      event.threadID,
-      (err, info) => {
-        if (!err) {
-          global.GoatBot.onReply.set(info.messageID, {
-            commandName: "baby",
-            author: event.senderID
-          });
-        }
-      },
-      event.messageID
+    const res = await axios.get(
+      `${simsim}/simsimi?text=${encodeURIComponent(text)}&senderName=${encodeURIComponent(senderName)}`
     );
+
+    const replies = Array.isArray(res.data.response)
+      ? res.data.response
+      : [res.data.response];
+
+    for (const msg of replies) {
+      await new Promise(resolve => {
+        api.sendMessage(
+          msg,
+          event.threadID,
+          (err, info) => {
+            if (!err) {
+              global.GoatBot.onReply.set(info.messageID, {
+                commandName: "baby",
+                author: event.senderID
+              });
+            }
+            resolve();
+          },
+          event.messageID
+        );
+      });
+    }
+  } catch (e) {
+    console.error("Error in sendSimsimi:", e);
+    api.sendMessage("❌ SimSimi API error!", event.threadID);
   }
-}
+    }
