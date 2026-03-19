@@ -5,7 +5,7 @@ module.exports = {
   config: {
     name: "baby",
     version: "1.0.7",
-    author: "washik",
+    author: "washiq",
     countDown: 0,
     role: 0,
     shortDescription: "Cute AI Baby Chatbot | Talk, Teach & Chat with Emotion ☢️",
